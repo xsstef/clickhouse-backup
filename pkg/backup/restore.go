@@ -71,7 +71,10 @@ func Restore(cfg *config.Config, backupName string, tablePattern string, schemaO
 	return nil
 }
 
-func RestoreforAgent(cfg *config.Config, backupName string, backup_tables []clickhouse.TableParams, dropTable bool) error {
+func RestoreforAgent(cfg *config.Config, backupName string, restore_tables []clickhouse.TableParams, dropTable bool) error {
+	if len(restore_tables) == 0 {
+		return fmt.Errorf("restore_tables is empty")
+	}
 	ch := &clickhouse.ClickHouse{
 		Config: &cfg.ClickHouse,
 	}
@@ -103,32 +106,34 @@ func RestoreforAgent(cfg *config.Config, backupName string, backup_tables []clic
 		return err
 	}
 
-	tables := make(map[string]string, 3)
-	tables["SchemaOnly"] = ""
-	tables["DataOnly"] = ""
-	tables["Both"] = ""
-	for _, table := range backup_tables {
+	var meta_tables, data_tables string
+	for _, table := range restore_tables {
 		if table.SchemaOnly && !table.DataOnly {
-			tables["SchemaOnly"] = tables["SchemaOnly"] + "," + table.Name
+			meta_tables = meta_tables + "," + table.Name
 		} else if table.DataOnly && !table.SchemaOnly {
-			tables["DataOnly"] = tables["DataOnly"] + "," + table.Name
+			data_tables = data_tables + "," + table.Name
 		} else if table.SchemaOnly == table.DataOnly {
-			tables["Both"] = tables["Both"] + "," + table.Name
+			meta_tables = meta_tables + "," + table.Name
+			data_tables = data_tables + "," + table.Name
 		}
 	}
-
-	if err := RestoreSchema(cfg, backupName, tables["SchemaOnly"], dropTable); err != nil {
-		return err
+	meta_tables = strings.TrimPrefix(meta_tables, ",")
+	data_tables = strings.TrimPrefix(data_tables, ",")
+	if len(meta_tables) > 0 {
+		if meta_tables == "ALL-TABLES" {
+			meta_tables = ""
+		}
+		if err := RestoreSchema(cfg, backupName, meta_tables, dropTable); err != nil {
+			return err
+		}
 	}
-	if err := RestoreSchema(cfg, backupName, tables["Both"], dropTable); err != nil {
-		return err
-	}
-
-	if err := RestoreData(cfg, backupName, tables["DataOnly"]); err != nil {
-		return err
-	}
-	if err := RestoreData(cfg, backupName, tables["Both"]); err != nil {
-		return err
+	if len(data_tables) > 0 {
+		if data_tables == "ALL-TABLES" {
+			data_tables = ""
+		}
+		if err := RestoreData(cfg, backupName, data_tables); err != nil {
+			return err
+		}
 	}
 
 	return nil

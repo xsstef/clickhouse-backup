@@ -71,11 +71,15 @@ func filterTablesByPattern(tables []clickhouse.Table, tablePattern string) []cli
 }
 
 func filterTablesByParams(tables []clickhouse.Table, tablePatterns []clickhouse.TableParams) []clickhouse.Table {
-	if len(tablePatterns) == 0 {
+	if len(tablePatterns) == 1 && tablePatterns[0].Name == "ALL-TABLES" {
+		for _, t := range tables {
+			t.SchemaOnly = tablePatterns[0].SchemaOnly
+		}
 		return tables
 	}
 
 	var result []clickhouse.Table
+
 	for _, t := range tables {
 		for _, pattern := range tablePatterns {
 			if matched, _ := filepath.Match(pattern.Name, fmt.Sprintf("%s.%s", t.Database, t.Name)); matched {
@@ -245,6 +249,9 @@ func CreateBackup(cfg *config.Config, backupName, tablePattern string, schemaOnl
 }
 
 func CreateBackupforAgent(cfg *config.Config, backupName string, backup_tables []clickhouse.TableParams, version string) error {
+	if len(backup_tables) == 0 {
+		return fmt.Errorf("backup_tables is empty")
+	}
 	if backupName == "" {
 		backupName = NewBackupName()
 	}
