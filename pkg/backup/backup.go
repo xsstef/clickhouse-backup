@@ -70,6 +70,23 @@ func filterTablesByPattern(tables []clickhouse.Table, tablePattern string) []cli
 	return result
 }
 
+func filterTablesByParams(tables []clickhouse.Table, tablePatterns []clickhouse.TableParams) []clickhouse.Table {
+	if len(tablePatterns) == 0 {
+		return tables
+	}
+
+	var result []clickhouse.Table
+	for _, t := range tables {
+		for _, pattern := range tablePatterns {
+			if matched, _ := filepath.Match(pattern.Name, fmt.Sprintf("%s.%s", t.Database, t.Name)); matched {
+				t.SchemaOnly = pattern.SchemaOnly
+				result = addTable(result, t)
+			}
+		}
+	}
+	return result
+}
+
 // NewBackupName - return default backup name
 func NewBackupName() string {
 	return time.Now().UTC().Format(TimeFormatForBackup)
@@ -153,6 +170,156 @@ func CreateBackup(cfg *config.Config, backupName, tablePattern string, schemaOnl
 		var realSize map[string]int64
 		var partitions map[string][]metadata.Part
 		if !schemaOnly {
+			log.Debug("create data")
+			partitions, realSize, err = AddTableToBackup(ch, backupName, &table)
+			if err != nil {
+				log.Error(err.Error())
+				if removeBackupErr := RemoveBackupLocal(cfg, backupName); removeBackupErr != nil {
+					log.Error(removeBackupErr.Error())
+				}
+				// continue
+				return err
+			}
+			backupDataSize += table.TotalBytes.Int64
+		}
+		log.Debug("create metadata")
+		metadataSize, err := createMetadata(ch, backupPath, metadata.TableMetadata{
+			Table:      table.Name,
+			Database:   table.Database,
+			Query:      table.CreateTableQuery,
+			TotalBytes: table.TotalBytes.Int64,
+			Size:       realSize,
+			Parts:      partitions,
+		})
+		if err != nil {
+			if removeBackupErr := RemoveBackupLocal(cfg, backupName); removeBackupErr != nil {
+				log.Error(removeBackupErr.Error())
+			}
+			return err
+			// continue
+		}
+		backupMetadataSize += int64(metadataSize)
+		t = append(t, metadata.TableTitle{
+			Database: table.Database,
+			Table:    table.Name,
+		})
+		log.Infof("done")
+	}
+	backupMetadata := metadata.BackupMetadata{
+		// TODO: надо помечать какие таблички зафейлились либо фейлить весь бэкап
+		BackupName:              backupName,
+		Disks:                   diskMap,
+		ClickhouseBackupVersion: version,
+		CreationDate:            time.Now().UTC(),
+		// Tags: ,
+		ClickHouseVersion: ch.GetVersionDescribe(),
+		DataSize:          backupDataSize,
+		MetadataSize:      backupMetadataSize,
+		// CompressedSize: ,
+		Tables:    t,
+		Databases: []metadata.DatabasesMeta{},
+	}
+	for _, database := range allDatabases {
+		backupMetadata.Databases = append(backupMetadata.Databases, metadata.DatabasesMeta(database))
+	}
+	content, err := json.MarshalIndent(&backupMetadata, "", "\t")
+	if err != nil {
+		_ = RemoveBackupLocal(cfg, backupName)
+		return fmt.Errorf("can't marshal backup metafile json: %v", err)
+	}
+	backupMetaFile := path.Join(defaultPath, "backup", backupName, "metadata.json")
+	if err := ioutil.WriteFile(backupMetaFile, content, 0640); err != nil {
+		_ = RemoveBackupLocal(cfg, backupName)
+		return err
+	}
+	if err := ch.Chown(backupMetaFile); err != nil {
+		log.Warnf("can't chown %s: %v", backupMetaFile, err)
+	}
+	log.Info("done")
+
+	// Clean
+	if err := RemoveOldBackupsLocal(cfg, true); err != nil {
+		return err
+	}
+	return nil
+}
+
+func CreateBackupforAgent(cfg *config.Config, backupName string, backup_tables []clickhouse.TableParams, version string) error {
+	if backupName == "" {
+		backupName = NewBackupName()
+	}
+	log := apexLog.WithFields(apexLog.Fields{
+		"backup":    backupName,
+		"operation": "create",
+	})
+	ch := &clickhouse.ClickHouse{
+		Config: &cfg.ClickHouse,
+	}
+	if err := ch.Connect(); err != nil {
+		return fmt.Errorf("can't connect to clickhouse: %v", err)
+	}
+	defer ch.Close()
+
+	allDatabases, err := ch.GetDatabases()
+	if err != nil {
+		return fmt.Errorf("cat't get database engines from clickhouse: %v", err)
+	}
+
+	allTables, err := ch.GetTables()
+	if err != nil {
+		return fmt.Errorf("cat't get tables from clickhouse: %v", err)
+	}
+	tables := filterTablesByParams(allTables, backup_tables)
+	i := 0
+	for _, table := range tables {
+		if table.Skip {
+			continue
+		}
+		i++
+	}
+	if i == 0 && !cfg.General.AllowEmptyBackups {
+		return fmt.Errorf("no tables for backup")
+	}
+
+	disks, err := ch.GetDisks()
+	if err != nil {
+		return err
+	}
+	// create backup dir on all clickhouse disks
+	for _, disk := range disks {
+		if err := ch.Mkdir(path.Join(disk.Path, "backup")); err != nil {
+			return err
+		}
+	}
+	defaultPath, err := ch.GetDefaultPath()
+	if err != nil {
+		return err
+	}
+	backupPath := path.Join(defaultPath, "backup", backupName)
+	if _, err := os.Stat(path.Join(backupPath, "metadata.json")); err == nil || !os.IsNotExist(err) {
+		return fmt.Errorf("'%s' already exists", backupName)
+	}
+	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
+		if err = ch.Mkdir(backupPath); err != nil {
+			log.Errorf("can't create diretory %s: %v", backupPath, err)
+		}
+	}
+	diskMap := map[string]string{}
+	for _, disk := range disks {
+		diskMap[disk.Name] = disk.Path
+	}
+	var backupDataSize, backupMetadataSize int64
+
+	var t []metadata.TableTitle
+	for _, table := range tables {
+		log := log.WithField("table", fmt.Sprintf("%s.%s", table.Database, table.Name))
+		if table.Skip {
+			continue
+		}
+		backupPath := path.Join(defaultPath, "backup", backupName)
+		var realSize map[string]int64
+		var partitions map[string][]metadata.Part
+		if !table.SchemaOnly {
 			log.Debug("create data")
 			partitions, realSize, err = AddTableToBackup(ch, backupName, &table)
 			if err != nil {

@@ -20,6 +20,7 @@ type Table struct {
 	StoragePolicy        string   `db:"storage_policy"`
 	CreateTableQuery     string   `db:"create_table_query"`
 	Skip                 bool
+	SchemaOnly           bool
 	TotalBytes           sql.NullInt64 `db:"total_bytes,omitempty"`
 	DependencesTable     []string      `db:"dependencies_table"`
 	DependenciesDatabase []string      `db:"dependencies_database"`
@@ -90,4 +91,10 @@ type PartDiff struct {
 	BTable           metadata.TableMetadata
 	PartitionsAdd    []metadata.Part
 	PartitionsRemove []metadata.Part
+}
+
+type TableParams struct {
+	Name       string `json:"name"`
+	SchemaOnly bool   `json:"schemaOnly"`
+	DataOnly   bool   `json:"dataOnly"`
 }

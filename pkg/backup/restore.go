@@ -71,6 +71,69 @@ func Restore(cfg *config.Config, backupName string, tablePattern string, schemaO
 	return nil
 }
 
+func RestoreforAgent(cfg *config.Config, backupName string, backup_tables []clickhouse.TableParams, dropTable bool) error {
+	ch := &clickhouse.ClickHouse{
+		Config: &cfg.ClickHouse,
+	}
+	if err := ch.Connect(); err != nil {
+		return fmt.Errorf("can't connect to clickhouse: %v", err)
+	}
+	defer ch.Close()
+	defaultDataPath, err := ch.GetDefaultPath()
+	if err != nil {
+		return ErrUnknownClickhouseDataPath
+	}
+	backupMetafileLocalPath := path.Join(defaultDataPath, "backup", backupName, "metadata.json")
+	backupMetadataBody, err := ioutil.ReadFile(backupMetafileLocalPath)
+	if err == nil {
+		backupMetadata := metadata.BackupMetadata{}
+		if err := json.Unmarshal(backupMetadataBody, &backupMetadata); err != nil {
+			return err
+		}
+		for _, database := range backupMetadata.Databases {
+			if err := ch.CreateDatabaseFromQuery(database.Query); err != nil {
+				return err
+			}
+		}
+		if len(backupMetadata.Tables) == 0 {
+			apexLog.Infof("'%s' is empty backup, nothing to do", backupName)
+			return nil
+		}
+	} else if !os.IsNotExist(err) { // Legacy backups don't contain metadata.json
+		return err
+	}
+
+	tables := make(map[string]string, 3)
+	tables["SchemaOnly"] = ""
+	tables["DataOnly"] = ""
+	tables["Both"] = ""
+	for _, table := range backup_tables {
+		if table.SchemaOnly && !table.DataOnly {
+			tables["SchemaOnly"] = tables["SchemaOnly"] + "," + table.Name
+		} else if table.DataOnly && !table.SchemaOnly {
+			tables["DataOnly"] = tables["DataOnly"] + "," + table.Name
+		} else if table.SchemaOnly == table.DataOnly {
+			tables["Both"] = tables["Both"] + "," + table.Name
+		}
+	}
+
+	if err := RestoreSchema(cfg, backupName, tables["SchemaOnly"], dropTable); err != nil {
+		return err
+	}
+	if err := RestoreSchema(cfg, backupName, tables["Both"], dropTable); err != nil {
+		return err
+	}
+
+	if err := RestoreData(cfg, backupName, tables["DataOnly"]); err != nil {
+		return err
+	}
+	if err := RestoreData(cfg, backupName, tables["Both"]); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // RestoreSchema - restore schemas matched by tablePattern from backupName
 func RestoreSchema(cfg *config.Config, backupName string, tablePattern string, dropTable bool) error {
 	if backupName == "" {
