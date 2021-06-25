@@ -119,21 +119,13 @@ func RestoreforAgent(cfg *config.Config, backupName string, restore_tables []cli
 	}
 	meta_tables = strings.TrimPrefix(meta_tables, ",")
 	data_tables = strings.TrimPrefix(data_tables, ",")
-	if len(meta_tables) > 0 {
-		if meta_tables == "ALL-TABLES" {
-			meta_tables = ""
-		}
-		if err := RestoreSchema(cfg, backupName, meta_tables, dropTable); err != nil {
-			return err
-		}
+
+	if err := RestoreSchema(cfg, backupName, meta_tables, dropTable); err != nil {
+		return err
 	}
-	if len(data_tables) > 0 {
-		if data_tables == "ALL-TABLES" {
-			data_tables = ""
-		}
-		if err := RestoreData(cfg, backupName, data_tables); err != nil {
-			return err
-		}
+
+	if err := RestoreData(cfg, backupName, data_tables); err != nil {
+		return err
 	}
 
 	return nil

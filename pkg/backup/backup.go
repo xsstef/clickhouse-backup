@@ -71,7 +71,7 @@ func filterTablesByPattern(tables []clickhouse.Table, tablePattern string) []cli
 }
 
 func filterTablesByParams(tables []clickhouse.Table, tablePatterns []clickhouse.TableParams) []clickhouse.Table {
-	if len(tablePatterns) == 1 && tablePatterns[0].Name == "ALL-TABLES" {
+	if len(tablePatterns) == 1 && tablePatterns[0].Name == "" {
 		for i := 0; i < len(tables); i++ {
 			tables[i].SchemaOnly = tablePatterns[0].SchemaOnly
 		}
