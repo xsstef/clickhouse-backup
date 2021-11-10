@@ -72,9 +72,6 @@ func Restore(cfg *config.Config, backupName string, tablePattern string, schemaO
 }
 
 func RestoreforAgent(cfg *config.Config, backupName string, restore_tables []clickhouse.TableParams, dropTable bool) error {
-	if len(restore_tables) == 0 {
-		return fmt.Errorf("restore_tables is empty")
-	}
 	ch := &clickhouse.ClickHouse{
 		Config: &cfg.ClickHouse,
 	}
